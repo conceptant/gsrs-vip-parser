@@ -17,14 +17,14 @@ This will produce an executable jar file in the directory called "target". The n
 gsrsnetworkmaker-0.0.1-SNAPSHOT-jar-with-dependencies.jar
 ```
 
-Run the .jar with "-h" flag to find mroe about its arguments:
+Run the .jar with "-h" flag to find more about its arguments:
 ```
 java -jar gsrsnetworkmaker-0.0.1-SNAPSHOT-jar-with-dependencies.jar -h
 ```
 
 Example of how to run the app with all parameters:
 ```
-java -jar gsrsnetworkmaker-0.0.1-SNAPSHOT-jar-with-dependencies.jar -f /tmp/dump-public-2020-10-01.gsrs -d /tmp/gsrsJsons -l 2 
+java -jar gsrsnetworkmaker-0.0.1-SNAPSHOT-jar-with-dependencies.jar -f /tmp/dump-public-2020-10-01.gsrs -d /tmp/gsrsJsons -l 2 -m 100 
 ```
 
 ##### NOTES

@@ -5,10 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
-import net.minidev.json.JSONArray;
 import org.apache.commons.cli.*;
-import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.ImmutableTriple;
 import org.apache.log4j.Logger;
 
@@ -26,7 +23,9 @@ import static gov.hhs.fda.ohi.gsrsnetworkmaker.Utils.*;
 public class NetworkMaker {
     private static final Logger logger = Logger.getLogger(NetworkMaker.class);
 
-    public static int DEFAULT_NESTING_LEVEL = 1;
+    public static String DEFAULT_OUTPUT_DIRECTORY = "jsons";
+    public static int DEFAULT_NESTING_LEVEL = 4;
+    public static int DEFAULT_MAX_NUMBER_OF_ELEMENTS = 200;
 
     public static Map<Pattern, String> patternToLinkType = new HashMap() {{
         put(getLiteralPattern("$['mixture']['components'][\\d+]['substance']"), "Component");
@@ -43,26 +42,24 @@ public class NetworkMaker {
     }};
 
     public static void main(String[] args) throws IOException {
-        ImmutableTriple<File, File, Integer> parseArgs = parseArgs(args);
-        File gsrsFile = parseArgs.left;
-        File outputDirectory = parseArgs.middle;
-        Integer nestingLevel = parseArgs.right;
+        Args parsedArgs = parseArgs(args);
 
         logger.debug("Getting nodes cache...");
-        Map<String, String> nodesCache = getFullNodesCache(gsrsFile);
+        Map<String, String> nodesCache = getFullNodesCache(parsedArgs.gsrsFile);
         showMemoryStats();
 
-        generateNetworkFiles(gsrsFile, outputDirectory, nestingLevel, nodesCache);
+        generateNetworkFiles(parsedArgs, nodesCache);
     }
 
-    private static ImmutableTriple<File, File, Integer> parseArgs(String[] args) {
+    private static Args parseArgs(String[] args) {
         Options options = new Options();
 
         Option gsrsFileOpt = new Option("f", true, "The file with .gsrs extension.\nCheck out \"Public Data Releases\" section in https://gsrs.ncats.nih.gov/#/archive");
         options.addOption(gsrsFileOpt);
 
-        options.addOption("d", true, "The output directory (created automatically) where json files will be written.\nDefault value: \"./jsons\"");
-        options.addOption("l", true, "The level of nesting for nodes.\nDefault value: 1");
+        options.addOption("d", true, "The output directory (created automatically) where json files will be written.\nDefault value: " + DEFAULT_OUTPUT_DIRECTORY);
+        options.addOption("l", true, "The level of nesting for nodes.\nDefault value: " + DEFAULT_NESTING_LEVEL);
+        options.addOption("m", true, "The maximum number of elements (nodes+links) for the whole network file.\nDefault value: " + DEFAULT_MAX_NUMBER_OF_ELEMENTS);
         options.addOption("h", false, "Show help");
 
         HelpFormatter formatter = new HelpFormatter();
@@ -95,7 +92,7 @@ public class NetworkMaker {
         File outputDirectory = new File(outputDirectoryPath);
         if (!isValidFile(outputDirectory)) {
             String currentDir = Paths.get("").toAbsolutePath().toString();
-            outputDirectory = new File(currentDir, "jsons");
+            outputDirectory = new File(currentDir, DEFAULT_OUTPUT_DIRECTORY);
             logger.info("Fallback for outputDir to " + outputDirectory.getAbsolutePath());
         }
         createDirIfNotExists(outputDirectory);
@@ -110,7 +107,17 @@ public class NetworkMaker {
             System.exit(1);
         }
 
-        return ImmutableTriple.of(gsrsFile, outputDirectory, nestingLevel);
+        Integer maxNumberOfElements = DEFAULT_MAX_NUMBER_OF_ELEMENTS;
+        try {
+            if (cmd.hasOption("m")) {
+                maxNumberOfElements = Integer.parseInt(cmd.getOptionValue("m"));
+            }
+        } catch (NumberFormatException e) {
+            System.out.println("Invalid max number of elements specified for \"m\" option: " + cmd.getOptionValue("m"));
+            System.exit(1);
+        }
+
+        return new Args(gsrsFile, outputDirectory, nestingLevel, maxNumberOfElements);
     }
 
     private static void printHelpAndExit(Options options, HelpFormatter formatter, int code) {
@@ -144,7 +151,12 @@ public class NetworkMaker {
 //        return nodesCache;
 //    }
 
-    public static void generateNetworkFiles(File gsrsDumpFile, File outputDirectory, Integer nestingLevel, Map<String, String> nodesCache) throws IOException {
+    public static void generateNetworkFiles(Args parsedArgs, Map<String, String> nodesCache) throws IOException {
+        File gsrsDumpFile = parsedArgs.gsrsFile;
+        File outputDirectory = parsedArgs.outputDirectory;
+        Integer nestingLevel = parsedArgs.nestingLevel;
+        Integer maxNumberOfElements = parsedArgs.maxNumberOfElements;
+
         try (InputStream fis = new FileInputStream(gsrsDumpFile)) {
             try (InputStream in = new GZIPInputStream(fis)) {
                 File finalOutputDirectory = outputDirectory;
@@ -154,7 +166,7 @@ public class NetworkMaker {
 
                     logger.debug("----------Processing uuid " + uuid + "----------");
                     try {
-                        String networkJson = getNetworkJson(gsrsJson, nodesCache, nestingLevel);
+                        String networkJson = getNetworkJson(gsrsJson, nodesCache, nestingLevel, maxNumberOfElements);
                         writeJsonFile(uuid, networkJson, finalOutputDirectory);
                     } catch (JsonProcessingException e) {
                         logger.error("Unable to get json string from result object for uuid " + uuid);
@@ -164,7 +176,7 @@ public class NetworkMaker {
         }
     }
 
-    public static String getNetworkJson(String json, Map<String, String> nodesCache, int nestingLevel) throws JsonProcessingException {
+    public static String getNetworkJson(String json, Map<String, String> nodesCache, Integer nestingLevel, Integer maxNumberOfElements) throws JsonProcessingException {
         List allNodes = new ArrayList();
         List allLinks = new ArrayList();
 
@@ -176,16 +188,31 @@ public class NetworkMaker {
 
         List prevLevelNodes = allNodes;
         for (int i = 0; i < nestingLevel; i++) {
-            int currentLevel = i + 1;
-            logger.debug("Getting nodes and links for level " + currentLevel);
-            ImmutablePair<List, List> nodesAndLinksForNewLevel = getNodesAndLinksForNodes(prevLevelNodes, nodesCache, addedNodeUuids);
+            int shownLevel = i + 1;
+            logger.debug("Getting nodes and links for level " + shownLevel);
 
-            List newLevelNodes = nodesAndLinksForNewLevel.left;
-            allNodes.addAll(newLevelNodes);
-            prevLevelNodes = newLevelNodes;
+            ImmutableTriple<Boolean, List, List> result = getNodesAndLinksForNodes(prevLevelNodes, nodesCache, addedNodeUuids, maxNumberOfElements);
+            Boolean isLevelFetched = result.left;
 
-            List newLevelLinks = nodesAndLinksForNewLevel.right;
-            allLinks.addAll(newLevelLinks);
+            if (isLevelFetched) {
+                addFetchStatusToNodes(prevLevelNodes, true);
+
+                List newLevelNodes = result.middle;
+                List newLevelLinks = result.right;
+                allNodes.addAll(newLevelNodes);
+                allLinks.addAll(newLevelLinks);
+
+                Boolean hasNewNodes = newLevelNodes.size() > 0;
+                if (!hasNewNodes) {
+                    logger.debug("No nodes found for level " + shownLevel + ". Processing stopped.");
+                    break;
+                }
+                prevLevelNodes = newLevelNodes;
+            } else {
+                addFetchStatusToNodes(prevLevelNodes, false);
+                logger.debug("Reached maximum level of elements, level " + shownLevel + " will be skipped. Processing stopped.");
+                break;
+            }
         }
 
         Map result = new HashMap();
@@ -195,29 +222,52 @@ public class NetworkMaker {
         return new ObjectMapper().writeValueAsString(result);
     }
 
-    public static ImmutablePair<List, List> getNodesAndLinksForNodes(List<Map<String, Object>> nodes, Map<String, String> nodesCache, Set<String> addedNodeUuids) {
-        List<String> nodeUuids = nodes.stream().map(node -> (String) node.get("id")).collect(Collectors.toList());
+    public static void addFetchStatusToNodes(List<Map<String, Object>> nodes, boolean status) {
+        for (Map node : nodes) {
+            node.put("fetched", status);
+        }
+    }
+
+    public static ImmutableTriple<Boolean, List, List> getNodesAndLinksForNodes(List<Map<String, Object>> sourceNodes, Map<String, String> nodesCache, Set<String> addedNodeUuids, Integer maxNumberOfElements) {
+        List<String> nodeUuids = sourceNodes.stream().map(node -> (String) node.get("id")).collect(Collectors.toList());
 
         List newNodes = new ArrayList();
         List newLinks = new ArrayList();
+        Integer remainingNumberOfElements = maxNumberOfElements;
         for (String nodeUuid : nodeUuids) {
-            ImmutablePair<List, List> nodesAndLinks = getNodesAndLinks(nodeUuid, nodesCache, addedNodeUuids);
-            newNodes.addAll(nodesAndLinks.left);
-            newLinks.addAll(nodesAndLinks.right);
+            ImmutableTriple<Boolean, List, List> result = getNodesAndLinks(nodeUuid, nodesCache, addedNodeUuids, remainingNumberOfElements);
+            Boolean isAllFetched = result.left;
+
+            if (!isAllFetched) {
+                return ImmutableTriple.of(false, newNodes, newLinks);
+            }
+
+            List nodes = result.middle;
+            List links = result.right;
+            remainingNumberOfElements -= nodes.size() + links.size();
+
+            newNodes.addAll(nodes);
+            newLinks.addAll(links);
         }
 
-        return ImmutablePair.of(newNodes, newLinks);
+        return ImmutableTriple.of(true, newNodes, newLinks);
     }
 
-    public static ImmutablePair<List, List> getNodesAndLinks(String sourceUuid, Map<String, String> nodesCache, Set<String> addedNodeUuids) {
+
+    public static ImmutableTriple<Boolean, List, List> getNodesAndLinks(String sourceUuid, Map<String, String> nodesCache, Set<String> addedNodeUuids, Integer maxNumberOfElements) {
         List nodes = new ArrayList();
-        List<Map<String, Object>> links = new ArrayList<Map<String, Object>>();
+        List<Map<String, Object>> links = new ArrayList<>();
+        Integer currentNumberOfElements = 0;
 
         String sourceJson = nodesCache.get(sourceUuid);
         List<String> refuuidPaths = getRefuuidPaths(sourceJson);
         logger.debug("Found " + refuuidPaths.size() + " refuuids for uuid " + sourceUuid);
 
         for (String refuuidPath : refuuidPaths) {
+            if (currentNumberOfElements >= maxNumberOfElements) {
+                return ImmutableTriple.of(false, nodes, links);
+            }
+
             String targetUuid = getRefuuid(sourceJson, refuuidPath);
             String targetJson = nodesCache.get(targetUuid);
             if (targetJson == null) {
@@ -234,13 +284,15 @@ public class NetworkMaker {
             } else {
                 nodes.add(getNode(targetJson));
                 addedNodeUuids.add(targetUuid);
+                currentNumberOfElements++;
             }
 
             // self-reference link is valid and should be added among with normal links
             links.add(getLink(sourceJson, sourceUuid, targetUuid, refuuidPath));
+            currentNumberOfElements++;
         }
 
-        return ImmutablePair.of(nodes, links);
+        return ImmutableTriple.of(true, nodes, links);
     }
 
     public static List<String> getRefuuidPaths(String json) {
@@ -268,7 +320,7 @@ public class NetworkMaker {
         String uuid = getUuid(json);
         nodeJson.put("id", uuid);
 
-        List<String> names = JsonPath.read(json, "$.names[?(@.preferred == true || @.displayName == true)]..name");
+        List<String> names = JsonPath.read(json, "$..names[?(@.preferred == true || @.displayName == true)]..name");
         String name = names.size() > 0 ? names.get(0) : uuid;
         nodeJson.put("n", name);
         nodeJson.put("tags", Collections.emptyList());
@@ -277,27 +329,33 @@ public class NetworkMaker {
         nodeJson.put("nodeType", substanceClass);
 
         Map<String, Object> nodeObj = new HashMap<>();
+        nodeObj.put("Name", name);
         nodeObj.put("Substance Class", substanceClass);
         nodeObj.put("Type", substanceClass);
-        nodeObj.put("Status", JsonPath.read(json, "$.status"));
 
-        String delimiter = "<br>";
-        nodeObj.put("Other Names", String.join(delimiter, (Iterable<? extends CharSequence>) JsonPath.read(json, "$.names..name")));
+        List<String> uniiCodes = JsonPath.read(json, "$..codes[?(@.codeSystem == \"FDA UNII\")].code");
+        nodeObj.put("UNII", uniiCodes.size() > 0 ? uniiCodes.get(0) : null);
 
-        JSONArray codes = JsonPath.read(json, "$.codes");
-        StringBuilder codesSb = new StringBuilder();
-        for (Object codeObject : codes) {
-            Map map = (Map) codeObject;
-            String codeSystem = (String) map.get("codeSystem");
-            String code = (String) map.get("code");
-            if (!StringUtils.isEmpty(code) && !StringUtils.isEmpty(codeSystem)) {
-                codesSb.append(codeSystem).append(": ").append(code).append(delimiter);
-            }
-        }
-        if (codesSb.length() > 0) {
-            codesSb.setLength(codesSb.length() - delimiter.length());
-            nodeObj.put("Codes", codesSb.toString());
-        }
+//        nodeObj.put("Status", JsonPath.read(json, "$.status"));
+
+//        String delimiter = "<br>";
+//        nodeObj.put("Other Names", String.join(delimiter, (Iterable<? extends CharSequence>) JsonPath.read(json, "$.names..name")));
+
+//        JSONArray codes = JsonPath.read(json, "$.codes");
+//        StringBuilder codesSb = new StringBuilder();
+//        for (Object codeObject : codes) {
+//            Map map = (Map) codeObject;
+//            String codeSystem = (String) map.get("codeSystem");
+//            String code = (String) map.get("code");
+//            if (!StringUtils.isEmpty(code) && !StringUtils.isEmpty(codeSystem)) {
+//                codesSb.append(codeSystem).append(": ").append(code).append(delimiter);
+//            }
+//        }
+//        if (codesSb.length() > 0) {
+//            codesSb.setLength(codesSb.length() - delimiter.length());
+//            nodeObj.put("Codes", codesSb.toString());
+//        }
+
         nodeJson.put("obj", nodeObj);
 
         return nodeJson;
@@ -309,9 +367,6 @@ public class NetworkMaker {
         link.put("target", targetUuid);
         link.put("tags", Collections.emptyList());
 
-        String linkType = getLinkType(refuuidPath);
-        link.put("linkType", linkType);
-
         // Parent obj is retrieved differently for paths with array and without array:
         // With array: "$['modifications']['structuralModifications'][0]['molecularFragment']" => "$['modifications']['structuralModifications'][0]
         // Without array: "$['mixture']['parentSubstance']" => "$['mixture']['parentSubstance']"
@@ -320,15 +375,18 @@ public class NetworkMaker {
         String parentPath = hasArrayInPath ? refuuidPath.substring(0, refuuidPath.lastIndexOf("[")) : refuuidPath;
         Map parentObject = JsonPath.read(sourceJson, parentPath);
 
-        String type = (String) parentObject.get("type");
+        String parentType = (String) parentObject.get("type");
         String name = (String) parentObject.get("name");
-        String n = name != null ? name : type;
+        String n = name != null ? name : parentType;
         putIfNotNull(link, "n", n);
 
-        Map<String, String> linkObj = new HashMap<String, String>();
-        linkObj.put("Link Type", linkType);
-        putIfNotNull(linkObj, "type", type);
-        putIfNotNull(linkObj, "uuid", parentObject.get("uuid"));
+        String linkType = getLinkType(refuuidPath);
+        link.put("linkType", parentType);
+
+        Map<String, String> linkObj = new HashMap<>();
+        linkObj.put("Link Type", parentType);
+        putIfNotNull(linkObj, "TYPE", linkType);
+        putIfNotNull(linkObj, "UUID", parentObject.get("uuid"));
         link.put("obj", linkObj);
 
         return link;
