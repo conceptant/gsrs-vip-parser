@@ -6,6 +6,7 @@ import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
 import org.apache.commons.cli.*;
+import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.ImmutableTriple;
 import org.apache.log4j.Logger;
 
@@ -27,7 +28,11 @@ public class NetworkMaker {
     public static int DEFAULT_NESTING_LEVEL = 4;
     public static int DEFAULT_MAX_NUMBER_OF_ELEMENTS = 200;
 
-    public static Map<Pattern, String> patternToLinkType = new HashMap() {{
+    public static String TAG_FETCHED = "fetched";
+    public static String TAG_UNFETCHED = "unfetched";
+
+
+    public static Map<Pattern, String> patternToLinkType = new LinkedHashMap() {{
         put(getLiteralPattern("$['mixture']['components'][\\d+]['substance']"), "Component");
         put(getLiteralPattern("$['mixture']['parentSubstance']"), "Mixture");
         put(getLiteralPattern("$['modifications']['agentModifications'][\\d+]['agentSubstance']"), "AgentModification");
@@ -97,7 +102,7 @@ public class NetworkMaker {
         }
         createDirIfNotExists(outputDirectory);
 
-        Integer nestingLevel = DEFAULT_NESTING_LEVEL;
+        int nestingLevel = DEFAULT_NESTING_LEVEL;
         try {
             if (cmd.hasOption("l")) {
                 nestingLevel = Integer.parseInt(cmd.getOptionValue("l"));
@@ -107,7 +112,7 @@ public class NetworkMaker {
             System.exit(1);
         }
 
-        Integer maxNumberOfElements = DEFAULT_MAX_NUMBER_OF_ELEMENTS;
+        int maxNumberOfElements = DEFAULT_MAX_NUMBER_OF_ELEMENTS;
         try {
             if (cmd.hasOption("m")) {
                 maxNumberOfElements = Integer.parseInt(cmd.getOptionValue("m"));
@@ -126,7 +131,7 @@ public class NetworkMaker {
     }
 
     public static Map<String, String> getFullNodesCache(File gsrsDumpFile) throws IOException {
-        Map<String, String> nodesCache = new HashMap<>();
+        Map<String, String> nodesCache = new LinkedHashMap<>();
         try (InputStream fis = new FileInputStream(gsrsDumpFile)) {
             try (InputStream in = new GZIPInputStream(fis)) {
                 new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8)).lines().forEach(p -> {
@@ -138,19 +143,6 @@ public class NetworkMaker {
         return nodesCache;
     }
 
-//    public static Map<String, Map> getPartialNodesCache(File gsrsDumpFile) throws IOException {
-//        Map<String, Map> nodesCache = new HashMap();
-//        try (InputStream fis = new FileInputStream(gsrsDumpFile)) {
-//            try (InputStream in = new GZIPInputStream(fis)) {
-//                new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8)).lines().forEach(p -> {
-//                    String json = p.trim();
-//                    nodesCache.put(getUuid(json), getNode(json));
-//                });
-//            }
-//        }
-//        return nodesCache;
-//    }
-
     public static void generateNetworkFiles(Args parsedArgs, Map<String, String> nodesCache) throws IOException {
         File gsrsDumpFile = parsedArgs.gsrsFile;
         File outputDirectory = parsedArgs.outputDirectory;
@@ -159,7 +151,6 @@ public class NetworkMaker {
 
         try (InputStream fis = new FileInputStream(gsrsDumpFile)) {
             try (InputStream in = new GZIPInputStream(fis)) {
-                File finalOutputDirectory = outputDirectory;
                 new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8)).lines().forEach(p -> {
                     String gsrsJson = p.trim();
                     String uuid = getUuid(gsrsJson);
@@ -167,7 +158,7 @@ public class NetworkMaker {
                     logger.debug("----------Processing uuid " + uuid + "----------");
                     try {
                         String networkJson = getNetworkJson(gsrsJson, nodesCache, nestingLevel, maxNumberOfElements);
-                        writeJsonFile(uuid, networkJson, finalOutputDirectory);
+                        writeJsonFile(uuid, networkJson, outputDirectory);
                     } catch (JsonProcessingException e) {
                         logger.error("Unable to get json string from result object for uuid " + uuid);
                     }
@@ -183,19 +174,20 @@ public class NetworkMaker {
         Map rootNode = getNode(json);
         allNodes.add(rootNode);
 
-        Set<String> addedNodeUuids = new HashSet();
+        Set<String> addedNodeUuids = new LinkedHashSet<>();
         addedNodeUuids.add((String) rootNode.get("id"));
 
         List prevLevelNodes = allNodes;
-        for (int i = 0; i < nestingLevel; i++) {
-            int shownLevel = i + 1;
+        int curNestingLevel = 0;
+        for (; curNestingLevel < nestingLevel; curNestingLevel++) {
+            int shownLevel = curNestingLevel + 1;
             logger.debug("Getting nodes and links for level " + shownLevel);
 
             ImmutableTriple<Boolean, List, List> result = getNodesAndLinksForNodes(prevLevelNodes, nodesCache, addedNodeUuids, maxNumberOfElements);
             Boolean isLevelFetched = result.left;
 
             if (isLevelFetched) {
-                addFetchStatusToNodes(prevLevelNodes, true);
+                processFetchStatusForNodes(prevLevelNodes, TAG_FETCHED);
 
                 List newLevelNodes = result.middle;
                 List newLevelLinks = result.right;
@@ -209,22 +201,143 @@ public class NetworkMaker {
                 }
                 prevLevelNodes = newLevelNodes;
             } else {
-                addFetchStatusToNodes(prevLevelNodes, false);
+                processFetchStatusForNodes(prevLevelNodes, TAG_UNFETCHED);
                 logger.debug("Reached maximum level of elements, level " + shownLevel + " will be skipped. Processing stopped.");
                 break;
             }
         }
 
-        Map result = new HashMap();
-        result.put("nodes", allNodes);
-        result.put("links", allLinks);
+        boolean isReachedLastLevel = curNestingLevel == nestingLevel;
+        if (isReachedLastLevel) {
+            processFetchStatusForNodes(prevLevelNodes, TAG_UNFETCHED);
+        }
 
-        return new ObjectMapper().writeValueAsString(result);
+        Map network = new LinkedHashMap();
+        network.put("nodes", allNodes);
+        addLinkMeta(allLinks);
+        network.put("links", allLinks);
+
+        ImmutablePair tagsAndLegend = getTagsAndLegend(allNodes, allLinks);
+        network.put("tags", tagsAndLegend.left);
+        network.put("legend", tagsAndLegend.right);
+
+        return new ObjectMapper().writeValueAsString(network);
     }
 
-    public static void addFetchStatusToNodes(List<Map<String, Object>> nodes, boolean status) {
-        for (Map node : nodes) {
-            node.put("fetched", status);
+    private static ImmutablePair<List, Map> getTagsAndLegend(List<Map<String, Object>> nodes, List<Map<String, Object>> links) {
+        List<Map<String, Object>> tags = new ArrayList<>();
+
+        // "id" should be unique and consistent among tags, so "id" fields equals "text" field fits this.
+        Map<String, Object> fetchedTag = new LinkedHashMap<>();
+        fetchedTag.put("text", capitalizeFirstLetter(TAG_FETCHED));
+        fetchedTag.put("id", TAG_FETCHED);
+        tags.add(fetchedTag);
+
+        Map<String, Object> unfetchedTag = new LinkedHashMap<>();
+        unfetchedTag.put("text", capitalizeFirstLetter(TAG_UNFETCHED));
+        unfetchedTag.put("id", TAG_UNFETCHED);
+        tags.add(unfetchedTag);
+
+        List<Map<String, Object>> legendNodes = new ArrayList<>();
+        Set<String> nodeTypesSet = new LinkedHashSet<>();
+        for (Map<String, Object> node : nodes) {
+            String nodeType = (String) node.get("nodeType");
+            if (!nodeTypesSet.contains(nodeType)) {
+                nodeTypesSet.add(nodeType);
+
+                final String capitalizedNodeType = capitalizeFirstLetter(nodeType);
+                tags.add(new LinkedHashMap() {{
+                    put("text", capitalizedNodeType);
+                    put("id", nodeType);
+                }});
+                legendNodes.add(new LinkedHashMap() {{
+                    put("text", capitalizedNodeType);
+                    put("nodeType", nodeType);
+                }});
+            }
+        }
+
+        List<Map<String, Object>> legendLinks = new ArrayList<>();
+        Set<String> linkTypesSet = new LinkedHashSet<>();
+        for (Map<String, Object> link : links) {
+            String linkType = (String) link.get("linkType");
+            if (linkType != null && !linkTypesSet.contains(linkType)) {
+                linkTypesSet.add(linkType);
+
+                tags.add(new LinkedHashMap() {{
+                    put("text", linkType);
+                    put("id", linkType);
+                }});
+                legendLinks.add(new LinkedHashMap() {{
+                    put("text", linkType);
+                    put("linkType", linkType);
+                }});
+            }
+        }
+
+        Map<String, Object> legend = new LinkedHashMap<>();
+        legend.put("nodes", legendNodes);
+        legend.put("links", legendLinks);
+
+        return ImmutablePair.of(tags, legend);
+    }
+
+    private static void addLinkMeta(List<Map<String, Object>> links) {
+        LinkedHashMap<String, List<Map<String, Object>>> linksGroupedByPath = new LinkedHashMap<>();
+        String linkPathDelimiter = "=|=";
+
+        for (Map<String, Object> link : links) {
+            String linkPath = link.get("source") + linkPathDelimiter + link.get("target");
+            List<Map<String, Object>> pathLinks = linksGroupedByPath.get(linkPath);
+            if (pathLinks == null) {
+                pathLinks = new ArrayList<>();
+                pathLinks.add(link);
+                linksGroupedByPath.put(linkPath, pathLinks);
+            } else {
+                pathLinks.add(link);
+            }
+        }
+
+        Set<String> processedReversedLinkPaths = new LinkedHashSet<>();
+        for (Map.Entry<String, List<Map<String, Object>>> entry : linksGroupedByPath.entrySet()) {
+            String linkPath = entry.getKey();
+            if (processedReversedLinkPaths.contains(linkPath)) {
+                continue;
+            }
+
+            String[] linkParts = linkPath.split(Pattern.quote(linkPathDelimiter));
+            String source = linkParts[0];
+            String target = linkParts[1];
+            String reversedLinkPath = target + linkPathDelimiter + source;
+
+            List<Map<String, Object>> pathLinks = entry.getValue();
+            List<Map<String, Object>> reversedPathLinks = linksGroupedByPath.getOrDefault(reversedLinkPath, Collections.emptyList());
+            List<Map<String, Object>> totalLinks = new ArrayList<>(pathLinks);
+            totalLinks.addAll(reversedPathLinks);
+
+            Integer linkTotal = totalLinks.size();
+            boolean isNeededToSetLinkMeta = linkTotal > 1;
+            if (isNeededToSetLinkMeta) {
+                for (int i = 0; i < totalLinks.size(); i++) {
+                    Map<String, Object> link = totalLinks.get(i);
+                    link.put("linkTotal", linkTotal);
+                    link.put("linkNumber", i);
+                }
+            }
+
+            processedReversedLinkPaths.add(reversedLinkPath);
+        }
+    }
+
+    public static void processFetchStatusForNodes(List<Map<String, Object>> nodes, String fetchStatus) {
+        for (Map<String, Object> node : nodes) {
+            String newNodeType = node.get("nodeType") + " (" + fetchStatus + ")";
+            node.put("nodeType", newNodeType);
+
+            Set<String> tags = new LinkedHashSet<>();
+            tags.add(newNodeType);
+            tags.add(fetchStatus);
+            node.put("tags", tags);
         }
     }
 
@@ -255,9 +368,9 @@ public class NetworkMaker {
 
 
     public static ImmutableTriple<Boolean, List, List> getNodesAndLinks(String sourceUuid, Map<String, String> nodesCache, Set<String> addedNodeUuids, Integer maxNumberOfElements) {
-        List nodes = new ArrayList();
+        List<Map<String, Object>> nodes = new ArrayList<Map<String, Object>>();
         List<Map<String, Object>> links = new ArrayList<>();
-        Integer currentNumberOfElements = 0;
+        int currentNumberOfElements = 0;
 
         String sourceJson = nodesCache.get(sourceUuid);
         List<String> refuuidPaths = getRefuuidPaths(sourceJson);
@@ -299,7 +412,7 @@ public class NetworkMaker {
         Configuration conf = Configuration.builder().options(com.jayway.jsonpath.Option.AS_PATH_LIST).build();
         try {
             // Gets all object paths where refuuid is present
-            return using(conf).parse(json).read("$..[?(@.refuuid)]");
+            return using(conf).parse(json).read("$..relationships..[?(@.refuuid)]");
         } catch (PathNotFoundException e) {
             // no refuuid paths found
             return Collections.emptyList();
@@ -315,7 +428,7 @@ public class NetworkMaker {
     }
 
     public static Map<String, Object> getNode(String json) {
-        Map<String, Object> nodeJson = new HashMap<>();
+        Map<String, Object> nodeJson = new LinkedHashMap<>();
 
         String uuid = getUuid(json);
         nodeJson.put("id", uuid);
@@ -323,12 +436,11 @@ public class NetworkMaker {
         List<String> names = JsonPath.read(json, "$..names[?(@.preferred == true || @.displayName == true)]..name");
         String name = names.size() > 0 ? names.get(0) : uuid;
         nodeJson.put("n", name);
-        nodeJson.put("tags", Collections.emptyList());
 
         String substanceClass = JsonPath.read(json, "$.substanceClass");
         nodeJson.put("nodeType", substanceClass);
 
-        Map<String, Object> nodeObj = new HashMap<>();
+        Map<String, Object> nodeObj = new LinkedHashMap<>();
         nodeObj.put("Name", name);
         nodeObj.put("Substance Class", substanceClass);
         nodeObj.put("Type", substanceClass);
@@ -336,36 +448,15 @@ public class NetworkMaker {
         List<String> uniiCodes = JsonPath.read(json, "$..codes[?(@.codeSystem == \"FDA UNII\")].code");
         nodeObj.put("UNII", uniiCodes.size() > 0 ? uniiCodes.get(0) : null);
 
-//        nodeObj.put("Status", JsonPath.read(json, "$.status"));
-
-//        String delimiter = "<br>";
-//        nodeObj.put("Other Names", String.join(delimiter, (Iterable<? extends CharSequence>) JsonPath.read(json, "$.names..name")));
-
-//        JSONArray codes = JsonPath.read(json, "$.codes");
-//        StringBuilder codesSb = new StringBuilder();
-//        for (Object codeObject : codes) {
-//            Map map = (Map) codeObject;
-//            String codeSystem = (String) map.get("codeSystem");
-//            String code = (String) map.get("code");
-//            if (!StringUtils.isEmpty(code) && !StringUtils.isEmpty(codeSystem)) {
-//                codesSb.append(codeSystem).append(": ").append(code).append(delimiter);
-//            }
-//        }
-//        if (codesSb.length() > 0) {
-//            codesSb.setLength(codesSb.length() - delimiter.length());
-//            nodeObj.put("Codes", codesSb.toString());
-//        }
-
         nodeJson.put("obj", nodeObj);
 
         return nodeJson;
     }
 
     public static Map<String, Object> getLink(String sourceJson, String sourceUuid, String targetUuid, String refuuidPath) {
-        Map<String, Object> link = new HashMap<>();
+        Map<String, Object> link = new LinkedHashMap<>();
         link.put("source", sourceUuid);
         link.put("target", targetUuid);
-        link.put("tags", Collections.emptyList());
 
         // Parent obj is retrieved differently for paths with array and without array:
         // With array: "$['modifications']['structuralModifications'][0]['molecularFragment']" => "$['modifications']['structuralModifications'][0]
@@ -380,11 +471,16 @@ public class NetworkMaker {
         String n = name != null ? name : parentType;
         putIfNotNull(link, "n", n);
 
-        String linkType = getLinkType(refuuidPath);
         link.put("linkType", parentType);
+        if (parentType != null) {
+            Set<String> tags = new LinkedHashSet<>();
+            tags.add(parentType);
+            link.put("tags", tags);
+        }
 
-        Map<String, String> linkObj = new HashMap<>();
+        Map<String, String> linkObj = new LinkedHashMap<>();
         linkObj.put("Link Type", parentType);
+        String linkType = getLinkType(refuuidPath);
         putIfNotNull(linkObj, "TYPE", linkType);
         putIfNotNull(linkObj, "UUID", parentObject.get("uuid"));
         link.put("obj", linkObj);
