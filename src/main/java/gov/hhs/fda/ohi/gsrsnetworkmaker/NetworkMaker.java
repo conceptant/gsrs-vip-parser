@@ -432,15 +432,25 @@ public class NetworkMaker {
         String uuid = getUuid(json);
         nodeJson.put("id", uuid);
 
-        List<String> names = (List) readJson(json, "$.names[?(@.preferred == true || @.displayName == true)]..name");
-        String name = names.size() > 0 ? names.get(0) : uuid;
-        nodeJson.put("n", name);
+        List<String> displayNames = (List) readJson(json, "$.names[?(@.displayName == true)]..name");
+        String n;
+        if (displayNames.size() > 0) {
+            n = displayNames.get(0);
+        } else {
+            List<String> preferredNames = (List) readJson(json, "$.names[?(@.preferred == true)]..name");
+            if (preferredNames.size() > 0) {
+                n = preferredNames.get(0);
+            } else {
+                n = (String) readJson(json, "$.names[0].name");
+            }
+        }
+        nodeJson.put("n", n);
 
         String substanceClass = (String) readJson(json, "$.substanceClass");
         nodeJson.put("nodeType", substanceClass);
 
         Map<String, Object> nodeObj = new LinkedHashMap<>();
-        nodeObj.put("Name", name);
+        nodeObj.put("Name", n);
         nodeObj.put("Substance Class", substanceClass);
         nodeObj.put("Type", substanceClass);
 
