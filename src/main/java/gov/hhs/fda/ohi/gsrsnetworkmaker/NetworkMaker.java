@@ -444,8 +444,13 @@ public class NetworkMaker {
         nodeObj.put("Substance Class", substanceClass);
         nodeObj.put("Type", substanceClass);
 
-        List uniiCodes = (List) readJson(json, "$.codes[?(@.codeSystem == \"FDA UNII\")].code");
-        nodeObj.put("UNII", uniiCodes.size() > 0 ? uniiCodes.get(0) : null);
+        String approvalId = (String) readJson(json, "$.approvalID");
+        if (approvalId != null) {
+            nodeObj.put("UNII", approvalId);
+        } else {
+            List uniiCodes = (List) readJson(json, "$.codes[?(@.codeSystem == \"FDA UNII\")].code");
+            nodeObj.put("UNII", uniiCodes.size() > 0 ? uniiCodes.get(0) : null);
+        }
 
         nodeJson.put("obj", nodeObj);
 
