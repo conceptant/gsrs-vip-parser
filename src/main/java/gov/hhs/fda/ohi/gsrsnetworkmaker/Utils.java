@@ -1,5 +1,8 @@
 package gov.hhs.fda.ohi.gsrsnetworkmaker;
 
+import com.jayway.jsonpath.Configuration;
+import com.jayway.jsonpath.JsonPath;
+import com.jayway.jsonpath.Option;
 import org.apache.log4j.Logger;
 
 import java.io.BufferedWriter;
@@ -11,6 +14,7 @@ import java.util.regex.Pattern;
 
 public class Utils {
     private static final Logger logger = Logger.getLogger(Utils.class);
+    private static final Configuration noExceptionsConf = Configuration.builder().options(Option.SUPPRESS_EXCEPTIONS).build();
 
     public static boolean isValidFile(File f) {
         try {
@@ -66,5 +70,9 @@ public class Utils {
                 "Max Memory: " + rn.maxMemory() / mb
         };
         logger.debug(String.join(System.lineSeparator(), messageParts));
+    }
+
+    public static Object readJson(String json, String path) {
+        return JsonPath.using(noExceptionsConf).parse(json).read(path);
     }
 }

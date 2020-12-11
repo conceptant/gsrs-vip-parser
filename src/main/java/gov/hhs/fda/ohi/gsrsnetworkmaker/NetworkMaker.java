@@ -3,7 +3,6 @@ package gov.hhs.fda.ohi.gsrsnetworkmaker;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.Configuration;
-import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
 import org.apache.commons.cli.*;
 import org.apache.commons.lang3.tuple.ImmutablePair;
@@ -368,7 +367,7 @@ public class NetworkMaker {
 
 
     public static ImmutableTriple<Boolean, List, List> getNodesAndLinks(String sourceUuid, Map<String, String> nodesCache, Set<String> addedNodeUuids, Integer maxNumberOfElements) {
-        List<Map<String, Object>> nodes = new ArrayList<Map<String, Object>>();
+        List<Map<String, Object>> nodes = new ArrayList<>();
         List<Map<String, Object>> links = new ArrayList<>();
         int currentNumberOfElements = 0;
 
@@ -412,7 +411,7 @@ public class NetworkMaker {
         Configuration conf = Configuration.builder().options(com.jayway.jsonpath.Option.AS_PATH_LIST).build();
         try {
             // Gets all object paths where refuuid is present
-            return using(conf).parse(json).read("$..relationships..[?(@.refuuid)]");
+            return using(conf).parse(json).read("$.relationships..[?(@.refuuid)]");
         } catch (PathNotFoundException e) {
             // no refuuid paths found
             return Collections.emptyList();
@@ -420,11 +419,11 @@ public class NetworkMaker {
     }
 
     public static String getRefuuid(String json, String refuuidPath) {
-        return JsonPath.read(json, refuuidPath + ".refuuid");
+        return (String) readJson(json, refuuidPath + ".refuuid");
     }
 
     public static String getUuid(String json) {
-        return JsonPath.read(json, "$.uuid");
+        return (String) readJson(json, "$.uuid");
     }
 
     public static Map<String, Object> getNode(String json) {
@@ -433,11 +432,11 @@ public class NetworkMaker {
         String uuid = getUuid(json);
         nodeJson.put("id", uuid);
 
-        List<String> names = JsonPath.read(json, "$..names[?(@.preferred == true || @.displayName == true)]..name");
+        List<String> names = (List) readJson(json, "$.names[?(@.preferred == true || @.displayName == true)]..name");
         String name = names.size() > 0 ? names.get(0) : uuid;
         nodeJson.put("n", name);
 
-        String substanceClass = JsonPath.read(json, "$.substanceClass");
+        String substanceClass = (String) readJson(json, "$.substanceClass");
         nodeJson.put("nodeType", substanceClass);
 
         Map<String, Object> nodeObj = new LinkedHashMap<>();
@@ -445,7 +444,7 @@ public class NetworkMaker {
         nodeObj.put("Substance Class", substanceClass);
         nodeObj.put("Type", substanceClass);
 
-        List<String> uniiCodes = JsonPath.read(json, "$..codes[?(@.codeSystem == \"FDA UNII\")].code");
+        List uniiCodes = (List) readJson(json, "$.codes[?(@.codeSystem == \"FDA UNII\")].code");
         nodeObj.put("UNII", uniiCodes.size() > 0 ? uniiCodes.get(0) : null);
 
         nodeJson.put("obj", nodeObj);
@@ -464,7 +463,7 @@ public class NetworkMaker {
         Pattern withArrayPattern = Pattern.compile("\\[\\d+\\]\\['\\w+'\\]$");
         boolean hasArrayInPath = withArrayPattern.matcher(refuuidPath).find();
         String parentPath = hasArrayInPath ? refuuidPath.substring(0, refuuidPath.lastIndexOf("[")) : refuuidPath;
-        Map parentObject = JsonPath.read(sourceJson, parentPath);
+        Map parentObject = (Map) readJson(sourceJson, parentPath);
 
         String parentType = (String) parentObject.get("type");
         String name = (String) parentObject.get("name");
