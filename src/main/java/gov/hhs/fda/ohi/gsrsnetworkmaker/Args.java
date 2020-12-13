@@ -7,11 +7,13 @@ public class Args {
     public File outputDirectory;
     public Integer nestingLevel;
     public Integer maxNumberOfElements;
+    public Integer maxNumberOfLinksPerNode;
 
-    public Args(File gsrsFile, File outputDirectory, Integer nestingLevel, Integer maxNumberOfElements) {
+    public Args(File gsrsFile, File outputDirectory, Integer nestingLevel, Integer maxNumberOfElements, Integer maxNumberOfLinksPerNode) {
         this.gsrsFile = gsrsFile;
         this.outputDirectory = outputDirectory;
         this.nestingLevel = nestingLevel;
         this.maxNumberOfElements = maxNumberOfElements;
+        this.maxNumberOfLinksPerNode = maxNumberOfLinksPerNode;
     }
 }

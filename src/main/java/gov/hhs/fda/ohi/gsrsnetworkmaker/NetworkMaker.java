@@ -14,7 +14,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
 import static com.jayway.jsonpath.JsonPath.using;
@@ -25,7 +24,8 @@ public class NetworkMaker {
 
     public static String DEFAULT_OUTPUT_DIRECTORY = "jsons";
     public static int DEFAULT_NESTING_LEVEL = 4;
-    public static int DEFAULT_MAX_NUMBER_OF_ELEMENTS = 200;
+    public static int DEFAULT_MAX_NUMBER_OF_ELEMENTS = 1000;
+    public static int DEFAULT_MAX_NUMBER_OF_LINKS_PER_NODE = 50;
 
     public static String TAG_FETCHED = "fetched";
     public static String TAG_UNFETCHED = "unfetched";
@@ -64,6 +64,7 @@ public class NetworkMaker {
         options.addOption("d", true, "The output directory (created automatically) where json files will be written.\nDefault value: " + DEFAULT_OUTPUT_DIRECTORY);
         options.addOption("l", true, "The level of nesting for nodes.\nDefault value: " + DEFAULT_NESTING_LEVEL);
         options.addOption("m", true, "The maximum number of elements (nodes+links) for the whole network file.\nDefault value: " + DEFAULT_MAX_NUMBER_OF_ELEMENTS);
+        options.addOption("n", true, "The maximum number of links for each node.\nDefault value: " + DEFAULT_MAX_NUMBER_OF_LINKS_PER_NODE);
         options.addOption("h", false, "Show help");
 
         HelpFormatter formatter = new HelpFormatter();
@@ -121,7 +122,17 @@ public class NetworkMaker {
             System.exit(1);
         }
 
-        return new Args(gsrsFile, outputDirectory, nestingLevel, maxNumberOfElements);
+        int maxNumberOfLinksPerNode = DEFAULT_MAX_NUMBER_OF_LINKS_PER_NODE;
+        try {
+            if (cmd.hasOption("n")) {
+                maxNumberOfLinksPerNode = Integer.parseInt(cmd.getOptionValue("n"));
+            }
+        } catch (NumberFormatException e) {
+            System.out.println("Invalid max number of links per node specified for \"n\" option: " + cmd.getOptionValue("n"));
+            System.exit(1);
+        }
+
+        return new Args(gsrsFile, outputDirectory, nestingLevel, maxNumberOfElements, maxNumberOfLinksPerNode);
     }
 
     private static void printHelpAndExit(Options options, HelpFormatter formatter, int code) {
@@ -147,6 +158,7 @@ public class NetworkMaker {
         File outputDirectory = parsedArgs.outputDirectory;
         Integer nestingLevel = parsedArgs.nestingLevel;
         Integer maxNumberOfElements = parsedArgs.maxNumberOfElements;
+        Integer maxNumberOfLinksPerNode = parsedArgs.maxNumberOfLinksPerNode;
 
         try (InputStream fis = new FileInputStream(gsrsDumpFile)) {
             try (InputStream in = new GZIPInputStream(fis)) {
@@ -156,7 +168,7 @@ public class NetworkMaker {
 
                     logger.debug("----------Processing uuid " + uuid + "----------");
                     try {
-                        String networkJson = getNetworkJson(gsrsJson, nodesCache, nestingLevel, maxNumberOfElements);
+                        String networkJson = getNetworkJson(gsrsJson, nodesCache, nestingLevel, maxNumberOfElements, maxNumberOfLinksPerNode);
                         writeJsonFile(uuid, networkJson, outputDirectory);
                     } catch (JsonProcessingException e) {
                         logger.error("Unable to get json string from result object for uuid " + uuid);
@@ -166,7 +178,13 @@ public class NetworkMaker {
         }
     }
 
-    public static String getNetworkJson(String json, Map<String, String> nodesCache, Integer nestingLevel, Integer maxNumberOfElements) throws JsonProcessingException {
+    public static String getNetworkJson(
+            String json, Map<String,
+            String> nodesCache,
+            Integer nestingLevel,
+            Integer maxNumberOfElements,
+            Integer maxNumberOfLinksPerNode
+    ) throws JsonProcessingException {
         List allNodes = new ArrayList();
         List allLinks = new ArrayList();
 
@@ -175,40 +193,40 @@ public class NetworkMaker {
 
         Set<String> addedNodeUuids = new LinkedHashSet<>();
         addedNodeUuids.add((String) rootNode.get("id"));
+        NetworkState state = new NetworkState(maxNumberOfElements, maxNumberOfLinksPerNode, addedNodeUuids);
 
         List prevLevelNodes = allNodes;
-        int curNestingLevel = 0;
-        for (; curNestingLevel < nestingLevel; curNestingLevel++) {
+        for (int curNestingLevel = 0; curNestingLevel < nestingLevel; curNestingLevel++) {
             int shownLevel = curNestingLevel + 1;
             logger.debug("Getting nodes and links for level " + shownLevel);
 
-            ImmutableTriple<Boolean, List, List> result = getNodesAndLinksForNodes(prevLevelNodes, nodesCache, addedNodeUuids, maxNumberOfElements);
-            Boolean isLevelFetched = result.left;
+            ImmutablePair<List, List> result = getNodesAndLinksForNodes(prevLevelNodes, nodesCache, state);
 
-            if (isLevelFetched) {
-                processFetchStatusForNodes(prevLevelNodes, TAG_FETCHED);
+            List newLevelNodes = result.left;
+            List newLevelLinks = result.right;
+            allNodes.addAll(newLevelNodes);
+            allLinks.addAll(newLevelLinks);
 
-                List newLevelNodes = result.middle;
-                List newLevelLinks = result.right;
-                allNodes.addAll(newLevelNodes);
-                allLinks.addAll(newLevelLinks);
-
-                Boolean hasNewNodes = newLevelNodes.size() > 0;
-                if (!hasNewNodes) {
-                    logger.debug("No nodes found for level " + shownLevel + ". Processing stopped.");
-                    break;
-                }
-                prevLevelNodes = newLevelNodes;
-            } else {
-                processFetchStatusForNodes(prevLevelNodes, TAG_UNFETCHED);
+            boolean isLimitReached = state.maxNumberOfElements == 0;
+            if (isLimitReached) {
+                processFetchStatusForNodes(newLevelNodes, TAG_UNFETCHED);
                 logger.debug("Reached maximum level of elements, level " + shownLevel + " will be skipped. Processing stopped.");
                 break;
             }
-        }
 
-        boolean isReachedLastLevel = curNestingLevel == nestingLevel;
-        if (isReachedLastLevel) {
-            processFetchStatusForNodes(prevLevelNodes, TAG_UNFETCHED);
+            Boolean hasNewNodes = newLevelNodes.size() > 0;
+            if (!hasNewNodes) {
+                processFetchStatusForNodes(newLevelNodes, TAG_UNFETCHED);
+                logger.debug("No nodes found for level " + shownLevel + ". Processing stopped.");
+                break;
+            }
+
+            boolean isLastLevelReached = curNestingLevel == nestingLevel;
+            if (isLastLevelReached) {
+                processFetchStatusForNodes(newLevelNodes, TAG_UNFETCHED);
+            }
+
+            prevLevelNodes = newLevelNodes;
         }
 
         Map network = new LinkedHashMap();
@@ -328,55 +346,67 @@ public class NetworkMaker {
         }
     }
 
+    public static void processFetchStatusForNode(Map<String, Object> node, String fetchStatus) {
+        String newNodeType = node.get("nodeType") + " (" + fetchStatus + ")";
+        node.put("nodeType", newNodeType);
+
+        Set<String> tags = new LinkedHashSet<>();
+        tags.add(newNodeType);
+        tags.add(fetchStatus);
+        node.put("tags", tags);
+    }
+
     public static void processFetchStatusForNodes(List<Map<String, Object>> nodes, String fetchStatus) {
         for (Map<String, Object> node : nodes) {
-            String newNodeType = node.get("nodeType") + " (" + fetchStatus + ")";
-            node.put("nodeType", newNodeType);
-
-            Set<String> tags = new LinkedHashSet<>();
-            tags.add(newNodeType);
-            tags.add(fetchStatus);
-            node.put("tags", tags);
+            processFetchStatusForNode(node, fetchStatus);
         }
     }
 
-    public static ImmutableTriple<Boolean, List, List> getNodesAndLinksForNodes(List<Map<String, Object>> sourceNodes, Map<String, String> nodesCache, Set<String> addedNodeUuids, Integer maxNumberOfElements) {
-        List<String> nodeUuids = sourceNodes.stream().map(node -> (String) node.get("id")).collect(Collectors.toList());
-
+    public static ImmutablePair<List, List> getNodesAndLinksForNodes(List<Map<String, Object>> sourceNodes, Map<String, String> nodesCache, NetworkState state) {
         List newNodes = new ArrayList();
         List newLinks = new ArrayList();
-        Integer remainingNumberOfElements = maxNumberOfElements;
-        for (String nodeUuid : nodeUuids) {
-            ImmutableTriple<Boolean, List, List> result = getNodesAndLinks(nodeUuid, nodesCache, addedNodeUuids, remainingNumberOfElements);
-            Boolean isAllFetched = result.left;
 
-            if (!isAllFetched) {
-                return ImmutableTriple.of(false, newNodes, newLinks);
+        for (Map sourceNode : sourceNodes) {
+            String nodeUuid = (String) sourceNode.get("id");
+            ImmutableTriple<Boolean, List, List> result = getNodesAndLinks(nodeUuid, nodesCache, state);
+            Boolean isFetched = result.left;
+            if (!isFetched) {
+                processFetchStatusForNode(sourceNode, TAG_UNFETCHED);
+
+                boolean isLimitReached = state.maxNumberOfElements == 0;
+                if (isLimitReached) {
+                    return ImmutablePair.of(newNodes, newLinks);
+                }
+                continue;
             }
 
-            List nodes = result.middle;
-            List links = result.right;
-            remainingNumberOfElements -= nodes.size() + links.size();
+            processFetchStatusForNode(sourceNode, TAG_FETCHED);
 
+            List<Map<String, Object>> nodes = result.middle;
+            nodes.stream().forEach((Map n) -> state.addedNodeUuids.add((String) n.get("id")));
+            List links = result.right;
+            state.maxNumberOfElements -= nodes.size() + links.size();
             newNodes.addAll(nodes);
             newLinks.addAll(links);
         }
 
-        return ImmutableTriple.of(true, newNodes, newLinks);
+        return ImmutablePair.of(newNodes, newLinks);
     }
 
 
-    public static ImmutableTriple<Boolean, List, List> getNodesAndLinks(String sourceUuid, Map<String, String> nodesCache, Set<String> addedNodeUuids, Integer maxNumberOfElements) {
+    public static ImmutableTriple<Boolean, List, List> getNodesAndLinks(String sourceUuid, Map<String, String> nodesCache, NetworkState state) {
         List<Map<String, Object>> nodes = new ArrayList<>();
         List<Map<String, Object>> links = new ArrayList<>();
+        Set<String> nodesUuids = new HashSet();
         int currentNumberOfElements = 0;
+        int currentNumberOfLinks = 0;
 
         String sourceJson = nodesCache.get(sourceUuid);
         List<String> refuuidPaths = getRefuuidPaths(sourceJson);
         logger.debug("Found " + refuuidPaths.size() + " refuuids for uuid " + sourceUuid);
 
         for (String refuuidPath : refuuidPaths) {
-            if (currentNumberOfElements >= maxNumberOfElements) {
+            if (currentNumberOfLinks > state.maxNumberOfLinksPerNode || currentNumberOfElements > state.maxNumberOfElements) {
                 return ImmutableTriple.of(false, nodes, links);
             }
 
@@ -388,20 +418,21 @@ public class NetworkMaker {
             }
 
             boolean isSelfReference = sourceUuid.equals(targetUuid);
-            boolean isAlreadyAdded = addedNodeUuids.contains(targetUuid);
+            boolean isAlreadyAdded = nodesUuids.contains(targetUuid) || state.addedNodeUuids.contains(targetUuid);
             if (isAlreadyAdded) {
 //                logger.warn("Node with targetUuid: " + targetUuid + " is already added");
             } else if (isSelfReference) {
                 logger.warn("Found self-reference for uuid: " + sourceUuid + ", refuuidPath: " + refuuidPath);
             } else {
                 nodes.add(getNode(targetJson));
-                addedNodeUuids.add(targetUuid);
+                nodesUuids.add(targetUuid);
                 currentNumberOfElements++;
             }
 
             // self-reference link is valid and should be added among with normal links
             links.add(getLink(sourceJson, sourceUuid, targetUuid, refuuidPath));
             currentNumberOfElements++;
+            currentNumberOfLinks++;
         }
 
         return ImmutableTriple.of(true, nodes, links);
