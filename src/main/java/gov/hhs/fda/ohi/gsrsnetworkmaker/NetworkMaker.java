@@ -209,21 +209,21 @@ public class NetworkMaker {
 
             boolean isLimitReached = state.maxNumberOfElements == 0;
             if (isLimitReached) {
-                processFetchStatusForNodes(newLevelNodes, TAG_UNFETCHED);
+                processListNodes(newLevelNodes);
                 logger.debug("Reached maximum level of elements, level " + shownLevel + " will be skipped. Processing stopped.");
                 break;
             }
 
             Boolean hasNewNodes = newLevelNodes.size() > 0;
             if (!hasNewNodes) {
-                processFetchStatusForNodes(newLevelNodes, TAG_UNFETCHED);
+                processListNodes(newLevelNodes);
                 logger.debug("No nodes found for level " + shownLevel + ". Processing stopped.");
                 break;
             }
 
-            boolean isLastLevelReached = curNestingLevel == nestingLevel;
+            boolean isLastLevelReached = curNestingLevel == nestingLevel - 1;
             if (isLastLevelReached) {
-                processFetchStatusForNodes(newLevelNodes, TAG_UNFETCHED);
+                processListNodes(newLevelNodes);
             }
 
             prevLevelNodes = newLevelNodes;
@@ -356,9 +356,12 @@ public class NetworkMaker {
         node.put("tags", tags);
     }
 
-    public static void processFetchStatusForNodes(List<Map<String, Object>> nodes, String fetchStatus) {
+    public static void processListNodes(List<Map<String, Object>> nodes) {
         for (Map<String, Object> node : nodes) {
-            processFetchStatusForNode(node, fetchStatus);
+            processFetchStatusForNode(node, TAG_UNFETCHED);
+
+            Map nodeObj = (Map) node.get("obj");
+            nodeObj.put("Number Of References", 0);
         }
     }
 
@@ -367,8 +370,7 @@ public class NetworkMaker {
         List newLinks = new ArrayList();
 
         for (Map sourceNode : sourceNodes) {
-            String nodeUuid = (String) sourceNode.get("id");
-            ImmutableTriple<Boolean, List, List> result = getNodesAndLinks(nodeUuid, nodesCache, state);
+            ImmutableTriple<Boolean, List, List> result = getNodesAndLinks(sourceNode, nodesCache, state);
             Boolean isFetched = result.left;
             if (!isFetched) {
                 processFetchStatusForNode(sourceNode, TAG_UNFETCHED);
@@ -394,7 +396,9 @@ public class NetworkMaker {
     }
 
 
-    public static ImmutableTriple<Boolean, List, List> getNodesAndLinks(String sourceUuid, Map<String, String> nodesCache, NetworkState state) {
+    public static ImmutableTriple<Boolean, List, List> getNodesAndLinks(Map sourceNode, Map<String, String> nodesCache, NetworkState state) {
+        String sourceUuid = (String) sourceNode.get("id");
+
         List<Map<String, Object>> nodes = new ArrayList<>();
         List<Map<String, Object>> links = new ArrayList<>();
         Set<String> nodesUuids = new HashSet();
@@ -403,10 +407,13 @@ public class NetworkMaker {
 
         String sourceJson = nodesCache.get(sourceUuid);
         List<String> refuuidPaths = getRefuuidPaths(sourceJson);
-        logger.debug("Found " + refuuidPaths.size() + " refuuids for uuid " + sourceUuid);
+        Integer numberOfReferences = refuuidPaths.size();
+        logger.debug("Found " + numberOfReferences + " refuuids for uuid " + sourceUuid);
+        Map sourceNodeObj = (Map) sourceNode.get("obj");
 
         for (String refuuidPath : refuuidPaths) {
             if (currentNumberOfLinks > state.maxNumberOfLinksPerNode || currentNumberOfElements > state.maxNumberOfElements) {
+                sourceNodeObj.put("Number Of References", numberOfReferences + " (WARNING: this number exceeds the maximum number of links supported by this visualization)");
                 return ImmutableTriple.of(false, nodes, links);
             }
 
@@ -434,6 +441,8 @@ public class NetworkMaker {
             currentNumberOfElements++;
             currentNumberOfLinks++;
         }
+
+        sourceNodeObj.put("Number Of References", currentNumberOfLinks);
 
         return ImmutableTriple.of(true, nodes, links);
     }
@@ -481,7 +490,7 @@ public class NetworkMaker {
         nodeJson.put("nodeType", substanceClass);
 
         Map<String, Object> nodeObj = new LinkedHashMap<>();
-        nodeObj.put("Name", n);
+        nodeObj.put("UUID", uuid);
         nodeObj.put("Substance Class", substanceClass);
         nodeObj.put("Type", substanceClass);
 
