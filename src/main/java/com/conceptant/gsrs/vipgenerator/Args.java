@@ -1,4 +1,4 @@
-package gov.hhs.fda.ohi.gsrsnetworkmaker;
+package com.conceptant.gsrs.vipgenerator;
 
 import java.io.File;
 

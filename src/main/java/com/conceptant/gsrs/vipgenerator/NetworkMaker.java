@@ -1,4 +1,4 @@
-package gov.hhs.fda.ohi.gsrsnetworkmaker;
+package com.conceptant.gsrs.vipgenerator;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -17,7 +17,6 @@ import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 
 import static com.jayway.jsonpath.JsonPath.using;
-import static gov.hhs.fda.ohi.gsrsnetworkmaker.Utils.*;
 
 public class NetworkMaker {
     private static final Logger logger = Logger.getLogger(NetworkMaker.class);
@@ -32,17 +31,17 @@ public class NetworkMaker {
 
 
     public static Map<Pattern, String> patternToLinkType = new LinkedHashMap() {{
-        put(getLiteralPattern("$['mixture']['components'][\\d+]['substance']"), "Component");
-        put(getLiteralPattern("$['mixture']['parentSubstance']"), "Mixture");
-        put(getLiteralPattern("$['modifications']['agentModifications'][\\d+]['agentSubstance']"), "AgentModification");
-        put(getLiteralPattern("$['modifications']['structuralModifications'][\\d+]['molecularFragment']"), "StructuralModification");
-        put(getLiteralPattern("$['polymer']['classification']['parentSubstance']"), "PolymerClassification");
-        put(getLiteralPattern("$['polymer']['monomers'][\\d+]['monomerSubstance']"), "Monomer");
-        put(getLiteralPattern("$['relationships'][\\d+]['mediatorSubstance']"), "Relationship");
-        put(getLiteralPattern("$['relationships'][\\d+]['relatedSubstance']"), "Relationship");
-        put(getLiteralPattern("$['structurallyDiverse']['hybridSpeciesMaternalOrganism']"), "StructurallyDiverse");
-        put(getLiteralPattern("$['structurallyDiverse']['hybridSpeciesPaternalOrganism']"), "StructurallyDiverse");
-        put(getLiteralPattern("$['structurallyDiverse']['parentSubstance']"), "StructurallyDiverse");
+        put(Utils.getLiteralPattern("$['mixture']['components'][\\d+]['substance']"), "Component");
+        put(Utils.getLiteralPattern("$['mixture']['parentSubstance']"), "Mixture");
+        put(Utils.getLiteralPattern("$['modifications']['agentModifications'][\\d+]['agentSubstance']"), "AgentModification");
+        put(Utils.getLiteralPattern("$['modifications']['structuralModifications'][\\d+]['molecularFragment']"), "StructuralModification");
+        put(Utils.getLiteralPattern("$['polymer']['classification']['parentSubstance']"), "PolymerClassification");
+        put(Utils.getLiteralPattern("$['polymer']['monomers'][\\d+]['monomerSubstance']"), "Monomer");
+        put(Utils.getLiteralPattern("$['relationships'][\\d+]['mediatorSubstance']"), "Relationship");
+        put(Utils.getLiteralPattern("$['relationships'][\\d+]['relatedSubstance']"), "Relationship");
+        put(Utils.getLiteralPattern("$['structurallyDiverse']['hybridSpeciesMaternalOrganism']"), "StructurallyDiverse");
+        put(Utils.getLiteralPattern("$['structurallyDiverse']['hybridSpeciesPaternalOrganism']"), "StructurallyDiverse");
+        put(Utils.getLiteralPattern("$['structurallyDiverse']['parentSubstance']"), "StructurallyDiverse");
     }};
 
     public static void main(String[] args) throws IOException {
@@ -50,7 +49,7 @@ public class NetworkMaker {
 
         logger.debug("Getting nodes cache...");
         Map<String, String> nodesCache = getFullNodesCache(parsedArgs.gsrsFile);
-        showMemoryStats();
+        Utils.showMemoryStats();
 
         generateNetworkFiles(parsedArgs, nodesCache);
     }
@@ -95,12 +94,12 @@ public class NetworkMaker {
 
         String outputDirectoryPath = cmd.getOptionValue("d");
         File outputDirectory = new File(outputDirectoryPath);
-        if (!isValidFile(outputDirectory)) {
+        if (!Utils.isValidFile(outputDirectory)) {
             String currentDir = Paths.get("").toAbsolutePath().toString();
             outputDirectory = new File(currentDir, DEFAULT_OUTPUT_DIRECTORY);
             logger.info("Fallback for outputDir to " + outputDirectory.getAbsolutePath());
         }
-        createDirIfNotExists(outputDirectory);
+        Utils.createDirIfNotExists(outputDirectory);
 
         int nestingLevel = DEFAULT_NESTING_LEVEL;
         try {
@@ -169,7 +168,7 @@ public class NetworkMaker {
                     logger.debug("----------Processing uuid " + uuid + "----------");
                     try {
                         String networkJson = getNetworkJson(gsrsJson, nodesCache, nestingLevel, maxNumberOfElements, maxNumberOfLinksPerNode);
-                        writeJsonFile(uuid, networkJson, outputDirectory);
+                        Utils.writeJsonFile(uuid, networkJson, outputDirectory);
                     } catch (JsonProcessingException e) {
                         logger.error("Unable to get json string from result object for uuid " + uuid);
                     }
@@ -246,12 +245,12 @@ public class NetworkMaker {
 
         // "id" should be unique and consistent among tags, so "id" fields equals "text" field fits this.
         Map<String, Object> fetchedTag = new LinkedHashMap<>();
-        fetchedTag.put("text", capitalizeFirstLetter(TAG_FETCHED));
+        fetchedTag.put("text", Utils.capitalizeFirstLetter(TAG_FETCHED));
         fetchedTag.put("id", TAG_FETCHED);
         tags.add(fetchedTag);
 
         Map<String, Object> unfetchedTag = new LinkedHashMap<>();
-        unfetchedTag.put("text", capitalizeFirstLetter(TAG_UNFETCHED));
+        unfetchedTag.put("text", Utils.capitalizeFirstLetter(TAG_UNFETCHED));
         unfetchedTag.put("id", TAG_UNFETCHED);
         tags.add(unfetchedTag);
 
@@ -262,7 +261,7 @@ public class NetworkMaker {
             if (!nodeTypesSet.contains(nodeType)) {
                 nodeTypesSet.add(nodeType);
 
-                final String capitalizedNodeType = capitalizeFirstLetter(nodeType);
+                final String capitalizedNodeType = Utils.capitalizeFirstLetter(nodeType);
                 tags.add(new LinkedHashMap() {{
                     put("text", capitalizedNodeType);
                     put("id", nodeType);
@@ -361,7 +360,7 @@ public class NetworkMaker {
             processFetchStatusForNode(node, TAG_UNFETCHED);
 
             Map nodeObj = (Map) node.get("obj");
-            nodeObj.put("Number Of References", 0);
+            nodeObj.put("Number Of Relationships", 0);
         }
     }
 
@@ -413,7 +412,7 @@ public class NetworkMaker {
 
         for (String refuuidPath : refuuidPaths) {
             if (currentNumberOfLinks > state.maxNumberOfLinksPerNode || currentNumberOfElements > state.maxNumberOfElements) {
-                sourceNodeObj.put("Number Of References", numberOfReferences + " (WARNING: this number exceeds the maximum number of links supported by this visualization)");
+                sourceNodeObj.put("Number Of Relationships", numberOfReferences + " (WARNING: this number exceeds the maximum number of links supported by this visualization)");
                 return ImmutableTriple.of(false, nodes, links);
             }
 
@@ -442,7 +441,7 @@ public class NetworkMaker {
             currentNumberOfLinks++;
         }
 
-        sourceNodeObj.put("Number Of References", currentNumberOfLinks);
+        sourceNodeObj.put("Number Of Relationships", currentNumberOfLinks);
 
         return ImmutableTriple.of(true, nodes, links);
     }
@@ -459,11 +458,11 @@ public class NetworkMaker {
     }
 
     public static String getRefuuid(String json, String refuuidPath) {
-        return (String) readJson(json, refuuidPath + ".refuuid");
+        return (String) Utils.readJson(json, refuuidPath + ".refuuid");
     }
 
     public static String getUuid(String json) {
-        return (String) readJson(json, "$.uuid");
+        return (String) Utils.readJson(json, "$.uuid");
     }
 
     public static Map<String, Object> getNode(String json) {
@@ -472,21 +471,21 @@ public class NetworkMaker {
         String uuid = getUuid(json);
         nodeJson.put("id", uuid);
 
-        List<String> displayNames = (List) readJson(json, "$.names[?(@.displayName == true)]..name");
+        List<String> displayNames = (List) Utils.readJson(json, "$.names[?(@.displayName == true)]..name");
         String n;
         if (displayNames.size() > 0) {
             n = displayNames.get(0);
         } else {
-            List<String> preferredNames = (List) readJson(json, "$.names[?(@.preferred == true)]..name");
+            List<String> preferredNames = (List) Utils.readJson(json, "$.names[?(@.preferred == true)]..name");
             if (preferredNames.size() > 0) {
                 n = preferredNames.get(0);
             } else {
-                n = (String) readJson(json, "$.names[0].name");
+                n = (String) Utils.readJson(json, "$.names[0].name");
             }
         }
         nodeJson.put("n", n);
 
-        String substanceClass = (String) readJson(json, "$.substanceClass");
+        String substanceClass = (String) Utils.readJson(json, "$.substanceClass");
         nodeJson.put("nodeType", substanceClass);
 
         Map<String, Object> nodeObj = new LinkedHashMap<>();
@@ -494,11 +493,11 @@ public class NetworkMaker {
         nodeObj.put("Substance Class", substanceClass);
         nodeObj.put("Type", substanceClass);
 
-        String approvalId = (String) readJson(json, "$.approvalID");
+        String approvalId = (String) Utils.readJson(json, "$.approvalID");
         if (approvalId != null) {
             nodeObj.put("UNII", approvalId);
         } else {
-            List uniiCodes = (List) readJson(json, "$.codes[?(@.codeSystem == \"FDA UNII\")].code");
+            List uniiCodes = (List) Utils.readJson(json, "$.codes[?(@.codeSystem == \"FDA UNII\")].code");
             nodeObj.put("UNII", uniiCodes.size() > 0 ? uniiCodes.get(0) : null);
         }
 
@@ -518,12 +517,12 @@ public class NetworkMaker {
         Pattern withArrayPattern = Pattern.compile("\\[\\d+\\]\\['\\w+'\\]$");
         boolean hasArrayInPath = withArrayPattern.matcher(refuuidPath).find();
         String parentPath = hasArrayInPath ? refuuidPath.substring(0, refuuidPath.lastIndexOf("[")) : refuuidPath;
-        Map parentObject = (Map) readJson(sourceJson, parentPath);
+        Map parentObject = (Map) Utils.readJson(sourceJson, parentPath);
 
         String parentType = (String) parentObject.get("type");
         String name = (String) parentObject.get("name");
         String n = name != null ? name : parentType;
-        putIfNotNull(link, "n", n);
+        Utils.putIfNotNull(link, "n", n);
 
         link.put("linkType", parentType);
         if (parentType != null) {
@@ -535,8 +534,8 @@ public class NetworkMaker {
         Map<String, String> linkObj = new LinkedHashMap<>();
         linkObj.put("Link Type", parentType);
         String linkType = getLinkType(refuuidPath);
-        putIfNotNull(linkObj, "TYPE", linkType);
-        putIfNotNull(linkObj, "UUID", parentObject.get("uuid"));
+        Utils.putIfNotNull(linkObj, "TYPE", linkType);
+        Utils.putIfNotNull(linkObj, "UUID", parentObject.get("uuid"));
         link.put("obj", linkObj);
 
         return link;
@@ -552,7 +551,7 @@ public class NetworkMaker {
 
         // Fallback for new (undocumented) link types. For example should get "Transformation" from "$['transformations']['a'][0]['b']"
         String linkType = refuuidPath.substring(refuuidPath.indexOf("$['") + 3, refuuidPath.indexOf("']"));
-        linkType = capitalizeFirstLetter(linkType);
+        linkType = Utils.capitalizeFirstLetter(linkType);
         return linkType.endsWith("s") ? linkType.substring(0, linkType.length() - 1) : linkType;
     }
 }

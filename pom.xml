@@ -111,7 +111,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>gov.hhs.fda.ohi.gsrsnetworkmaker.NetworkMaker</mainClass>
+                            <mainClass>com.conceptant.gsrs.vipgenerator.NetworkMaker</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>
