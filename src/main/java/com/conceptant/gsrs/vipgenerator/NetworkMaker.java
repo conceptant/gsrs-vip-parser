@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.PathNotFoundException;
+import net.minidev.json.JSONArray;
 import org.apache.commons.cli.*;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.ImmutableTriple;
@@ -29,26 +30,29 @@ public class NetworkMaker {
     public static String TAG_FETCHED = "fetched";
     public static String TAG_UNFETCHED = "unfetched";
 
+    private static ObjectMapper mapper = new ObjectMapper();
 
     public static Map<Pattern, String> patternToLinkType = new LinkedHashMap() {{
+        put(Utils.getLiteralPattern("$['relationships'][\\d+]['mediatorSubstance']"), "Relationship");
+        put(Utils.getLiteralPattern("$['relationships'][\\d+]['relatedSubstance']"), "Relationship");
+        /* For now not used links:
         put(Utils.getLiteralPattern("$['mixture']['components'][\\d+]['substance']"), "Component");
         put(Utils.getLiteralPattern("$['mixture']['parentSubstance']"), "Mixture");
         put(Utils.getLiteralPattern("$['modifications']['agentModifications'][\\d+]['agentSubstance']"), "AgentModification");
         put(Utils.getLiteralPattern("$['modifications']['structuralModifications'][\\d+]['molecularFragment']"), "StructuralModification");
         put(Utils.getLiteralPattern("$['polymer']['classification']['parentSubstance']"), "PolymerClassification");
         put(Utils.getLiteralPattern("$['polymer']['monomers'][\\d+]['monomerSubstance']"), "Monomer");
-        put(Utils.getLiteralPattern("$['relationships'][\\d+]['mediatorSubstance']"), "Relationship");
-        put(Utils.getLiteralPattern("$['relationships'][\\d+]['relatedSubstance']"), "Relationship");
         put(Utils.getLiteralPattern("$['structurallyDiverse']['hybridSpeciesMaternalOrganism']"), "StructurallyDiverse");
         put(Utils.getLiteralPattern("$['structurallyDiverse']['hybridSpeciesPaternalOrganism']"), "StructurallyDiverse");
         put(Utils.getLiteralPattern("$['structurallyDiverse']['parentSubstance']"), "StructurallyDiverse");
+        */
     }};
 
     public static void main(String[] args) throws IOException {
         Args parsedArgs = parseArgs(args);
 
         logger.debug("Getting nodes cache...");
-        Map<String, String> nodesCache = getFullNodesCache(parsedArgs.gsrsFile);
+        Map<String, Map> nodesCache = getNodesCache(parsedArgs.gsrsFile);
         Utils.showMemoryStats();
 
         generateNetworkFiles(parsedArgs, nodesCache);
@@ -152,7 +156,34 @@ public class NetworkMaker {
         return nodesCache;
     }
 
-    public static void generateNetworkFiles(Args parsedArgs, Map<String, String> nodesCache) throws IOException {
+    public static Map<String, Map> getNodesCache(File gsrsDumpFile) throws IOException {
+        Map<String, Map> nodesCache = new LinkedHashMap<>();
+        try (InputStream fis = new FileInputStream(gsrsDumpFile)) {
+            try (InputStream in = new GZIPInputStream(fis)) {
+                new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8)).lines().forEach(p -> {
+                    String gsrsJson = p.trim();
+                    String uuid = getUuid(gsrsJson);
+
+                    Map<String, Object> cache = new HashMap<>();
+                    Map<String, Object> node = getNode(gsrsJson);
+                    try {
+                        cache.put("node", mapper.writeValueAsString(node));
+                    } catch (JsonProcessingException e) {
+                        logger.error("Unable to serialize node with uuid " + uuid);
+                    }
+
+                    JSONArray relationshipsArray = (JSONArray) Utils.readJson(gsrsJson, "relationships");
+                    String relationshipsString = "{ \"relationships\": " + relationshipsArray.toJSONString() + "}";
+                    cache.put("relationships", relationshipsString);
+
+                    nodesCache.put(uuid, cache);
+                });
+            }
+        }
+        return nodesCache;
+    }
+
+    public static void generateNetworkFiles(Args parsedArgs, Map<String, Map> nodesCache) throws IOException {
         File gsrsDumpFile = parsedArgs.gsrsFile;
         File outputDirectory = parsedArgs.outputDirectory;
         Integer nestingLevel = parsedArgs.nestingLevel;
@@ -178,8 +209,7 @@ public class NetworkMaker {
     }
 
     public static String getNetworkJson(
-            String json, Map<String,
-            String> nodesCache,
+            String json, Map<String, Map> nodesCache,
             Integer nestingLevel,
             Integer maxNumberOfElements,
             Integer maxNumberOfLinksPerNode
@@ -237,7 +267,7 @@ public class NetworkMaker {
         network.put("tags", tagsAndLegend.left);
         network.put("legend", tagsAndLegend.right);
 
-        return new ObjectMapper().writeValueAsString(network);
+        return mapper.writeValueAsString(network);
     }
 
     private static ImmutablePair<List, Map> getTagsAndLegend(List<Map<String, Object>> nodes, List<Map<String, Object>> links) {
@@ -364,7 +394,7 @@ public class NetworkMaker {
         }
     }
 
-    public static ImmutablePair<List, List> getNodesAndLinksForNodes(List<Map<String, Object>> sourceNodes, Map<String, String> nodesCache, NetworkState state) {
+    public static ImmutablePair<List, List> getNodesAndLinksForNodes(List<Map<String, Object>> sourceNodes, Map<String, Map> nodesCache, NetworkState state) {
         List newNodes = new ArrayList();
         List newLinks = new ArrayList();
 
@@ -395,7 +425,7 @@ public class NetworkMaker {
     }
 
 
-    public static ImmutableTriple<Boolean, List, List> getNodesAndLinks(Map sourceNode, Map<String, String> nodesCache, NetworkState state) {
+    public static ImmutableTriple<Boolean, List, List> getNodesAndLinks(Map sourceNode, Map<String, Map> nodesCache, NetworkState state) {
         String sourceUuid = (String) sourceNode.get("id");
 
         List<Map<String, Object>> nodes = new ArrayList<>();
@@ -404,11 +434,13 @@ public class NetworkMaker {
         int currentNumberOfElements = 0;
         int currentNumberOfLinks = 0;
 
-        String sourceJson = nodesCache.get(sourceUuid);
-        List<String> refuuidPaths = getRefuuidPaths(sourceJson);
+        Map sourceJson = nodesCache.get(sourceUuid);
+        Map sourceNodeObj = (Map) sourceNode.get("obj");
+        String relationshipsString = (String) sourceJson.get("relationships");
+        List<String> refuuidPaths = getRefuuidPaths(relationshipsString);
+
         Integer numberOfReferences = refuuidPaths.size();
         logger.debug("Found " + numberOfReferences + " refuuids for uuid " + sourceUuid);
-        Map sourceNodeObj = (Map) sourceNode.get("obj");
 
         for (String refuuidPath : refuuidPaths) {
             if (currentNumberOfLinks > state.maxNumberOfLinksPerNode || currentNumberOfElements > state.maxNumberOfElements) {
@@ -416,8 +448,8 @@ public class NetworkMaker {
                 return ImmutableTriple.of(false, nodes, links);
             }
 
-            String targetUuid = getRefuuid(sourceJson, refuuidPath);
-            String targetJson = nodesCache.get(targetUuid);
+            String targetUuid = getRefuuid(relationshipsString, refuuidPath);
+            Map targetJson = nodesCache.get(targetUuid);
             if (targetJson == null) {
                 logger.error("Unable to find json in cache for uuid " + targetUuid + " found by refuuidPath " + refuuidPath);
                 continue;
@@ -430,13 +462,18 @@ public class NetworkMaker {
             } else if (isSelfReference) {
                 logger.warn("Found self-reference for uuid: " + sourceUuid + ", refuuidPath: " + refuuidPath);
             } else {
-                nodes.add(getNode(targetJson));
-                nodesUuids.add(targetUuid);
-                currentNumberOfElements++;
+                try {
+                    Map node = mapper.readValue((String) targetJson.get("node"), Map.class);
+                    nodes.add(node);
+                    nodesUuids.add(targetUuid);
+                    currentNumberOfElements++;
+                } catch (IOException e) {
+                    logger.error("Unable deserialize node with uuid " + targetUuid);
+                }
             }
 
             // self-reference link is valid and should be added among with normal links
-            links.add(getLink(sourceJson, sourceUuid, targetUuid, refuuidPath));
+            links.add(getLink(relationshipsString, sourceUuid, targetUuid, refuuidPath));
             currentNumberOfElements++;
             currentNumberOfLinks++;
         }
@@ -450,7 +487,7 @@ public class NetworkMaker {
         Configuration conf = Configuration.builder().options(com.jayway.jsonpath.Option.AS_PATH_LIST).build();
         try {
             // Gets all object paths where refuuid is present
-            return using(conf).parse(json).read("$.relationships..[?(@.refuuid)]");
+            return using(conf).parse(json).read("$..[?(@.refuuid)]");
         } catch (PathNotFoundException e) {
             // no refuuid paths found
             return Collections.emptyList();
